@@ -396,3 +396,7 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# Cuda 11.8 installer
+cuda-repo-wsl-ubuntu-11-8-local_11.8.0-1_amd64.deb
+cuda-repo-wsl-ubuntu-11-8-local_11.8.0-1_amd64.deb:Zone.Identifier
