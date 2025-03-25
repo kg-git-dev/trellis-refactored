@@ -13,6 +13,8 @@ from trellis.pipelines import TrellisImageTo3DPipeline
 from trellis.representations import Gaussian, MeshExtractResult
 from trellis.utils import render_utils, postprocessing_utils
 
+# Clearing cache on first load accounting for interruption during run. (Ctrl + C)
+torch.cuda.empty_cache()
 print("gradio started")
 
 MAX_SEED = np.iinfo(np.int32).max
@@ -143,6 +145,8 @@ def image_to_3d(
         str: The path to the video of the 3D model.
     """
     print("start image to 3d")
+    
+
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     if not is_multiimage:
         outputs = pipeline.run(

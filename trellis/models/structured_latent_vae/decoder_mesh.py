@@ -7,8 +7,7 @@ from ...modules.utils import zero_module, convert_module_to_f16, convert_module_
 from ...modules import sparse as sp
 from .base import SparseTransformerBase
 from ...representations import MeshExtractResult
-from ...representations.mesh import SparseFeatures2Mesh
-
+from ...representations.mesh import SparseFeatures2MCMesh
 
 class SparseSubdivideBlock3d(nn.Module):
     """
@@ -102,7 +101,7 @@ class SLatMeshDecoder(SparseTransformerBase):
         )
         self.resolution = resolution
         self.rep_config = representation_config
-        self.mesh_extractor = SparseFeatures2Mesh(res=self.resolution*4, use_color=self.rep_config.get('use_color', False))
+        self.mesh_extractor = SparseFeatures2MCMesh(res=self.resolution*4, use_color=self.rep_config.get('use_color', False))
         self.out_channels = self.mesh_extractor.feats_channels
         self.upsample = nn.ModuleList([
             SparseSubdivideBlock3d(
