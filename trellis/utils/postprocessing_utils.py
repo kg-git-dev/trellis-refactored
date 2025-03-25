@@ -404,7 +404,6 @@ def to_glb(
     texture_size: int = 1024,
     debug: bool = False,
     verbose: bool = True,
-    gs_renderer='gsplat',
 ) -> trimesh.Trimesh:
     """
     Convert a generated asset to a glb file.
@@ -441,8 +440,7 @@ def to_glb(
     vertices, faces, uvs = parametrize_mesh(vertices, faces)
 
     # bake texture
-    observations, extrinsics, intrinsics = render_multiview(app_rep, resolution=1024, nviews=100,
-                                                            gs_renderer=gs_renderer)
+    observations, extrinsics, intrinsics = render_multiview(app_rep, resolution=1024, nviews=100)
     masks = [np.any(observation > 0, axis=-1) for observation in observations]
     extrinsics = [extrinsics[i].cpu().numpy() for i in range(len(extrinsics))]
     intrinsics = [intrinsics[i].cpu().numpy() for i in range(len(intrinsics))]

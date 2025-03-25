@@ -13,6 +13,7 @@ from trellis.pipelines import TrellisImageTo3DPipeline
 from trellis.representations import Gaussian, MeshExtractResult
 from trellis.utils import render_utils, postprocessing_utils
 
+print("gradio started")
 
 MAX_SEED = np.iinfo(np.int32).max
 TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp')
@@ -39,7 +40,9 @@ def preprocess_image(image: Image.Image) -> Image.Image:
     Returns:
         Image.Image: The preprocessed image.
     """
+    print("preprocessing")
     processed_image = pipeline.preprocess_image(image)
+    print("preprocess complete")
     return processed_image
 
 
@@ -59,6 +62,7 @@ def preprocess_images(images: List[Tuple[Image.Image, str]]) -> List[Image.Image
 
 
 def pack_state(gs: Gaussian, mesh: MeshExtractResult) -> dict:
+    print("pack state")
     return {
         'gaussian': {
             **gs.init_params,
@@ -76,6 +80,7 @@ def pack_state(gs: Gaussian, mesh: MeshExtractResult) -> dict:
     
     
 def unpack_state(state: dict) -> Tuple[Gaussian, edict, str]:
+    print("unpack start")
     gs = Gaussian(
         aabb=state['gaussian']['aabb'],
         sh_degree=state['gaussian']['sh_degree'],
@@ -94,6 +99,8 @@ def unpack_state(state: dict) -> Tuple[Gaussian, edict, str]:
         vertices=torch.tensor(state['mesh']['vertices'], device='cuda'),
         faces=torch.tensor(state['mesh']['faces'], device='cuda'),
     )
+
+    print("unpack end")
     
     return gs, mesh
 
@@ -135,6 +142,7 @@ def image_to_3d(
         dict: The information of the generated 3D model.
         str: The path to the video of the 3D model.
     """
+    print("start image to 3d")
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     if not is_multiimage:
         outputs = pipeline.run(
@@ -174,6 +182,7 @@ def image_to_3d(
     imageio.mimsave(video_path, video, fps=15)
     state = pack_state(outputs['gaussian'][0], outputs['mesh'][0])
     torch.cuda.empty_cache()
+    print("3d to video completed")
     return state, video_path
 
 
@@ -194,12 +203,15 @@ def extract_glb(
     Returns:
         str: The path to the extracted GLB file.
     """
+
+    print("extract glb")
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     gs, mesh = unpack_state(state)
     glb = postprocessing_utils.to_glb(gs, mesh, simplify=mesh_simplify, texture_size=texture_size, verbose=False)
     glb_path = os.path.join(user_dir, 'sample.glb')
     glb.export(glb_path)
     torch.cuda.empty_cache()
+    print("extract completed")
     return glb_path, glb_path
 
 
@@ -213,11 +225,13 @@ def extract_gaussian(state: dict, req: gr.Request) -> Tuple[str, str]:
     Returns:
         str: The path to the extracted Gaussian file.
     """
+    print("getting gaussian")
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     gs, _ = unpack_state(state)
     gaussian_path = os.path.join(user_dir, 'sample.ply')
     gs.save_ply(gaussian_path)
     torch.cuda.empty_cache()
+    print("got gaussian")
     return gaussian_path, gaussian_path
 
 
