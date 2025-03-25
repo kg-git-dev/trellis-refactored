@@ -417,7 +417,6 @@ def to_glb(
         texture_size (int): Size of the texture.
         debug (bool): Whether to print debug information.
         verbose (bool): Whether to print progress.
-        gs_renderer (str): Name of the renderer to use for gaussian splatting rendering.
     """
     vertices = mesh.vertices.cpu().numpy()
     faces = mesh.faces.cpu().numpy()
