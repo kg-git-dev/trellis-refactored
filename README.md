@@ -13,10 +13,10 @@ It is suggested to use Cuda 11.8 due to dependency issues.
 - Activate:
 ```conda activate trellis_refactored```
 - Need to default to cuda 11.8:
-```mkdir -p $CONDA_PREFIX/etc/conda/activate.d```
-```echo 'export CUDA_HOME=/usr/local/cuda-11.8' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh```
-```echo 'export PATH=$CUDA_HOME/bin:$PATH' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh```
-```echo 'export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh```
+```mkdir -p $CONDA_PREFIX/etc/conda/activate.d```\
+```echo 'export CUDA_HOME=/usr/local/cuda-11.8' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh```\
+```echo 'export PATH=$CUDA_HOME/bin:$PATH' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh```\
+```echo 'export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh```\
 - Deactivate and reactivate to reset
 - ```nvcc --version``` to check if cuda 11.8 is currently active
 
@@ -30,8 +30,11 @@ Pytorch 2.4.0 is recommended to be used with cuda 11.8. Install with:
 ## Import all dependencies for demo
 ```. ./setup.sh --demo```
 
-## TEMPORARY WORK IN PROGRESS :Need to install gsplat separately
+## TEMPORARY WORK IN PROGRESS: Need to install gsplat separately
 ```pip install gsplat```
+
+## TEMPORARY WORK IN PROGRESS: Need to install TorchMCubes for testing purposes. This works in GPU and is significantly faster
+```pip install git+https://github.com/tatsy/torchmcubes.git```
 
 ## Check the gradio implementation in browser
 ```python app.py```

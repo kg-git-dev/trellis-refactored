@@ -7,195 +7,133 @@ from typing import Tuple, Optional
 from .cube2mesh import MeshExtractResult
 from .utils_cube import *
 from ...modules.sparse import SparseTensor
+import torchmcubes
 
 class EnhancedMarchingCubes:
     def __init__(self, device="cuda"):
         self.device = device
-
+        self.zero = torch.tensor(0.0, device=device)
+        self.one = torch.tensor(1.0, device=device)
+        # Pre-compute offsets once
+        self.offsets = torch.tensor([
+            [0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1],
+            [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1]
+        ], device=device, dtype=torch.long)
+        
     def __call__(self,
-                 voxelgrid_vertices: torch.Tensor,
-                 scalar_field: torch.Tensor,
-                 voxelgrid_colors: Optional[torch.Tensor] = None,
-                 training: bool = False
-                 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Enhanced Marching Cubes implementation that handles deformations and colors
-        """
+                voxelgrid_vertices: torch.Tensor,
+                scalar_field: torch.Tensor,
+                voxelgrid_colors: Optional[torch.Tensor] = None,
+                training: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        
+        # Validate inputs and standardize shapes upfront
+        scalar_field = self._prepare_scalar_field(scalar_field)
+        voxelgrid_vertices = self._prepare_voxelgrid(voxelgrid_vertices, scalar_field.shape[0])
+        
+        # Use torchmcubes for GPU acceleration
+        vertices, triangles = torchmcubes.marching_cubes(scalar_field, 0.0)
+        vertices = vertices.float()
+        faces = triangles.long()
+        
+        # Process deformations and colors
+        deformed_vertices = self._apply_deformations(vertices, voxelgrid_vertices)
+        colors = self._process_colors(vertices, voxelgrid_colors, scalar_field.shape[0]) if voxelgrid_colors is not None else None
+        
+        # Compute loss if training
+        deviation_loss = self._compute_deviation_loss(vertices, deformed_vertices) if training else self.zero
+        
+        return deformed_vertices, faces.flip(dims=[1]), deviation_loss, colors
+    
+    def _prepare_scalar_field(self, scalar_field: torch.Tensor) -> torch.Tensor:
+        """Standardize scalar field shape and move to GPU"""
+
         if scalar_field.dim() == 1:
-            grid_size = int(round(scalar_field.shape[0] ** (1 / 3)))
-            scalar_field = scalar_field.reshape(grid_size, grid_size, grid_size)
-        elif scalar_field.dim() > 3:
-            scalar_field = scalar_field.squeeze()
+            grid_size = int(round(scalar_field.shape[0] ** (1/3)))
+            scalar_field = scalar_field.view(grid_size, grid_size, grid_size)
+        return scalar_field.squeeze().to(self.device)
 
-        # Convert to numpy and ensure values are in correct range
-        scalar_np = scalar_field.cpu().numpy()
+    def _prepare_voxelgrid(self, voxelgrid: torch.Tensor, grid_size: int) -> torch.Tensor:
+        """Standardize voxel grid shape"""
 
-        if scalar_np.ndim != 3:
-            raise ValueError(f"Expected 3D array, got shape {scalar_np.shape}")
+        if voxelgrid is None:
+            return None
+        if voxelgrid.dim() == 2:
+            return voxelgrid.view(grid_size, grid_size, grid_size, -1).to(self.device)
+        return voxelgrid.to(self.device)
+    
+    def _apply_deformations(self, vertices: torch.Tensor, voxelgrid: torch.Tensor) -> torch.Tensor:
+        """Optimized deformation application with fused operations"""
+        
+        # Convert vertices to grid coordinates in one operation
+        grid_coords = vertices.long()
+        local_coords = vertices - grid_coords.float()
+        
+        # Clamp coordinates in one operation
+        max_coord = voxelgrid.shape[0] - 1
+        grid_coords = torch.clamp(grid_coords, 0, max_coord)
+        
+        # Vectorized trilinear interpolation
+        return self._trilinear_interpolate_v2(grid_coords, local_coords, voxelgrid)
 
-        # Run marching cubes with normalized coordinates
-        vertices, faces, normals, _ = measure.marching_cubes(
-            scalar_np,
-            level=0.0,
-            gradient_direction='ascent'
-        )
-
-        vertices = torch.from_numpy(np.ascontiguousarray(vertices)).float().to(self.device)
-        faces = torch.from_numpy(np.ascontiguousarray(faces)).long().to(self.device)
-
-        # Apply deformations
-        if voxelgrid_vertices is not None:
-            # Reshape and normalize voxelgrid_vertices if needed
-            if voxelgrid_vertices.dim() == 2:
-                voxelgrid_vertices = voxelgrid_vertices.reshape(grid_size, grid_size, grid_size, 3)
-            deformed_vertices = self._apply_deformations(vertices, voxelgrid_vertices)
+    def _trilinear_interpolate_v2(self, grid_coords: torch.Tensor, 
+                                local_coords: torch.Tensor,
+                                values: torch.Tensor) -> torch.Tensor:
+        """Vectorized trilinear interpolation"""
+        # Unpack coordinates
+        x, y, z = local_coords.unbind(1)
+        x_ = torch.stack([1-x, x], dim=1)
+        y_ = torch.stack([1-y, y], dim=1)
+        z_ = torch.stack([1-z, z], dim=1)
+        
+        # Outer product for weights
+        weights = (x_.unsqueeze(2) * y_.unsqueeze(1)).view(-1, 4, 1) * z_.unsqueeze(1)
+        weights = weights.view(-1, 8)
+        
+        # Compute all neighbor coordinates in one operation
+        neighbor_coords = grid_coords.unsqueeze(1) + self.offsets.unsqueeze(0)
+        neighbor_coords = torch.clamp(neighbor_coords, 0, values.shape[0]-1)
+        
+        # Gather values from grid (handles both 3D and 4D tensors)
+        if values.dim() == 4:
+            neighbor_values = values[
+                neighbor_coords[..., 0],
+                neighbor_coords[..., 1], 
+                neighbor_coords[..., 2]
+            ]
         else:
-            deformed_vertices = vertices
-
-        # Handle colors if provided
-        colors = None
-        if voxelgrid_colors is not None:
-            if voxelgrid_colors.dim() == 2:
-                voxelgrid_colors = voxelgrid_colors.reshape(grid_size, grid_size, grid_size, -1)
-            colors = self._interpolate_colors(vertices, voxelgrid_colors)
-            # Ensure colors are in [0, 1] range
-            colors = torch.sigmoid(colors)
-
-        # Compute deviation loss for training
-        deviation_loss = torch.tensor(0.0, device=self.device)
-        if training:
-            deviation_loss = self._compute_deviation_loss(vertices, deformed_vertices)
-
-        faces = faces.flip(dims=[1])  # Reverse the order of vertices in each face, for some reason it's reversed...
-
-        return deformed_vertices, faces, deviation_loss, colors
-
-    def _apply_deformations(self, vertices: torch.Tensor,
-                            voxelgrid_vertices: torch.Tensor) -> torch.Tensor:
-        """Apply deformations to vertices using trilinear interpolation"""
-
-        grid_positions = vertices.clone()
-
-        # Scale to grid coordinates
-        grid_coords = grid_positions.long()
-        local_coords = grid_positions - grid_coords.float()
-
-        # Reshape voxelgrid_vertices if needed
-        if voxelgrid_vertices.dim() == 2:
-            # Assuming voxelgrid_vertices is [N, 3]
-            grid_size = int(round(voxelgrid_vertices.shape[0] ** (1 / 3)))
-            voxelgrid_vertices = voxelgrid_vertices.reshape(grid_size, grid_size, grid_size, 3)
-
-        # Ensure coordinates are within bounds
-        grid_coords = torch.clamp(grid_coords, 0, voxelgrid_vertices.shape[0] - 1)
-
-        # Perform trilinear interpolation
-        deformed_vertices = self._trilinear_interpolate(
-            grid_coords, local_coords, voxelgrid_vertices
-        )
-
-        return deformed_vertices
-
-    def _interpolate_colors(self, vertices: torch.Tensor,
-                            voxelgrid_colors: torch.Tensor) -> torch.Tensor:
-        """Interpolate colors for vertices"""
-
-        # Get grid positions
-        grid_positions = vertices.clone()
-
-        # Scale to grid coordinates
-        grid_coords = grid_positions.long()
-        local_coords = grid_positions - grid_coords.float()
-
-        # Reshape colors if they're in 2D format
-        if voxelgrid_colors.dim() == 2:
-            grid_size = int(round(voxelgrid_colors.shape[0] ** (1 / 3)))
-            color_channels = voxelgrid_colors.shape[1]
-            voxelgrid_colors = voxelgrid_colors.reshape(grid_size, grid_size, grid_size, color_channels)
-
-        # Ensure coordinates are within bounds
-        grid_coords = torch.clamp(grid_coords, 0, voxelgrid_colors.shape[0] - 1)
-
-        # Perform trilinear interpolation
-        return self._trilinear_interpolate(
-            grid_coords, local_coords, voxelgrid_colors, is_color=True
-        )
-
-    def _trilinear_interpolate(self, grid_coords: torch.Tensor,
-                               local_coords: torch.Tensor,
-                               values: torch.Tensor,
-                               is_color: bool = False) -> torch.Tensor:
-        """Perform trilinear interpolation"""
-        x, y, z = local_coords[:, 0], local_coords[:, 1], local_coords[:, 2]
-
-        if is_color and values.dim() == 2:
-            # Handle flat color array
-            grid_size = int(round(values.shape[0] ** (1 / 3)))
-            color_channels = values.shape[1]
-            values = values.reshape(grid_size, grid_size, grid_size, color_channels)
-
-        # Get corner values with proper indexing based on dimensionality
-        if values.dim() == 4:  # For 4D tensors (grid x grid x grid x channels)
-            c000 = values[grid_coords[:, 0], grid_coords[:, 1], grid_coords[:, 2], :]
-            c001 = values[grid_coords[:, 0], grid_coords[:, 1],
-                   torch.clamp(grid_coords[:, 2] + 1, 0, values.shape[2] - 1), :]
-            c010 = values[grid_coords[:, 0], torch.clamp(grid_coords[:, 1] + 1, 0, values.shape[1] - 1),
-                   grid_coords[:, 2], :]
-            c011 = values[grid_coords[:, 0], torch.clamp(grid_coords[:, 1] + 1, 0, values.shape[1] - 1),
-                   torch.clamp(grid_coords[:, 2] + 1, 0, values.shape[2] - 1), :]
-            c100 = values[torch.clamp(grid_coords[:, 0] + 1, 0, values.shape[0] - 1), grid_coords[:, 1],
-                   grid_coords[:, 2], :]
-            c101 = values[torch.clamp(grid_coords[:, 0] + 1, 0, values.shape[0] - 1), grid_coords[:, 1],
-                   torch.clamp(grid_coords[:, 2] + 1, 0, values.shape[2] - 1), :]
-            c110 = values[torch.clamp(grid_coords[:, 0] + 1, 0, values.shape[0] - 1),
-                   torch.clamp(grid_coords[:, 1] + 1, 0, values.shape[1] - 1), grid_coords[:, 2], :]
-            c111 = values[torch.clamp(grid_coords[:, 0] + 1, 0, values.shape[0] - 1),
-                   torch.clamp(grid_coords[:, 1] + 1, 0, values.shape[1] - 1),
-                   torch.clamp(grid_coords[:, 2] + 1, 0, values.shape[2] - 1), :]
-        else:
-            c000 = values[grid_coords[:, 0], grid_coords[:, 1], grid_coords[:, 2]]
-            c001 = values[
-                grid_coords[:, 0], grid_coords[:, 1], torch.clamp(grid_coords[:, 2] + 1, 0, values.shape[2] - 1)]
-            c010 = values[
-                grid_coords[:, 0], torch.clamp(grid_coords[:, 1] + 1, 0, values.shape[1] - 1), grid_coords[:, 2]]
-            c011 = values[grid_coords[:, 0], torch.clamp(grid_coords[:, 1] + 1, 0, values.shape[1] - 1), torch.clamp(
-                grid_coords[:, 2] + 1, 0, values.shape[2] - 1)]
-            c100 = values[
-                torch.clamp(grid_coords[:, 0] + 1, 0, values.shape[0] - 1), grid_coords[:, 1], grid_coords[:, 2]]
-            c101 = values[torch.clamp(grid_coords[:, 0] + 1, 0, values.shape[0] - 1), grid_coords[:, 1], torch.clamp(
-                grid_coords[:, 2] + 1, 0, values.shape[2] - 1)]
-            c110 = values[
-                torch.clamp(grid_coords[:, 0] + 1, 0, values.shape[0] - 1), torch.clamp(grid_coords[:, 1] + 1, 0,
-                                                                                        values.shape[
-                                                                                            1] - 1), grid_coords[:, 2]]
-            c111 = values[
-                torch.clamp(grid_coords[:, 0] + 1, 0, values.shape[0] - 1), torch.clamp(grid_coords[:, 1] + 1, 0,
-                                                                                        values.shape[
-                                                                                            1] - 1), torch.clamp(
-                    grid_coords[:, 2] + 1, 0, values.shape[2] - 1)]
-
-        # Add channel dimension for 3D tensors if needed
-        if values.dim() == 3:
-            c000, c001, c010, c011 = [c[..., None] if c.dim() == 1 else c for c in [c000, c001, c010, c011]]
-            c100, c101, c110, c111 = [c[..., None] if c.dim() == 1 else c for c in [c100, c101, c110, c111]]
-
-        # Interpolate along x
-        c00 = c000 * (1 - x)[:, None] + c100 * x[:, None]
-        c01 = c001 * (1 - x)[:, None] + c101 * x[:, None]
-        c10 = c010 * (1 - x)[:, None] + c110 * x[:, None]
-        c11 = c011 * (1 - x)[:, None] + c111 * x[:, None]
-
-        # Interpolate along y
-        c0 = c00 * (1 - y)[:, None] + c10 * y[:, None]
-        c1 = c01 * (1 - y)[:, None] + c11 * y[:, None]
-
-        # Interpolate along z
-        return c0 * (1 - z)[:, None] + c1 * z[:, None]
-
-    def _compute_deviation_loss(self, original_vertices: torch.Tensor,
-                                deformed_vertices: torch.Tensor) -> torch.Tensor:
-        """Compute deviation loss for training"""
-        return torch.mean((deformed_vertices - original_vertices) ** 2)
+            neighbor_values = values[
+                neighbor_coords[..., 0],
+                neighbor_coords[..., 1],
+                neighbor_coords[..., 2]
+            ].unsqueeze(-1)
+        
+        # Compute interpolation weights
+        weights = torch.stack([
+            (1-x)*(1-y)*(1-z), (1-x)*(1-y)*z, (1-x)*y*(1-z), (1-x)*y*z,
+            x*(1-y)*(1-z), x*(1-y)*z, x*y*(1-z), x*y*z
+        ], dim=1)
+        
+        return (weights.unsqueeze(-1) * neighbor_values).sum(dim=1)
+    
+    def _process_colors(self, vertices: torch.Tensor, 
+                    colors: torch.Tensor,
+                    grid_size: int) -> torch.Tensor:
+        """Optimized color processing pipeline"""
+        colors = self._prepare_voxelgrid(colors, grid_size)
+            
+        # Use the same optimized interpolation
+        interpolated = self._trilinear_interpolate_v2(
+            vertices.long(),
+            vertices - vertices.long().float(),
+            colors
+        )     
+        # Sigmoid in place for memory efficiency
+        return torch.sigmoid_(interpolated)
+    
+    def _compute_deviation_loss(self, original: torch.Tensor, 
+                            deformed: torch.Tensor) -> torch.Tensor:
+        """Fused operation deviation loss"""
+        return torch.mean(torch.square_(deformed - original))
 
 
 class SparseFeatures2MCMesh:
