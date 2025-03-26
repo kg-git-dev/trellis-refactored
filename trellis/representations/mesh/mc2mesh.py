@@ -8,7 +8,6 @@ from .cube2mesh import MeshExtractResult
 from .utils_cube import *
 from ...modules.sparse import SparseTensor
 
-
 class EnhancedMarchingCubes:
     def __init__(self, device="cuda"):
         self.device = device
