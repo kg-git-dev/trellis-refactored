@@ -50,7 +50,7 @@ class EnhancedMarchingCubes:
         if scalar_field.dim() == 1:
             grid_size = int(round(scalar_field.shape[0] ** (1/3)))
             scalar_field = scalar_field.view(grid_size, grid_size, grid_size)
-        return scalar_field.squeeze().to(self.device)
+        return scalar_field.squeeze().contiguous().to(self.device)
 
     def _prepare_voxelgrid(self, voxelgrid: torch.Tensor, grid_size: int) -> torch.Tensor:
         """Standardize voxel grid shape"""
@@ -63,7 +63,7 @@ class EnhancedMarchingCubes:
     
     def _apply_deformations(self, vertices: torch.Tensor, voxelgrid: torch.Tensor) -> torch.Tensor:
         """Optimized deformation application with fused operations"""
-        
+
         # Convert vertices to grid coordinates in one operation
         grid_coords = vertices.long()
         local_coords = vertices - grid_coords.float()
