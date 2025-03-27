@@ -36,6 +36,10 @@ Pytorch 2.4.0 is recommended to be used with cuda 11.8. Install with:
 ## Check the gradio implementation in browser
 ```python app.py```
 
+## Add conda forge channel
+```conda config --add channels conda-forge```\
+```conda config --set channel_priority strict```
+
 ## Pytorch 3d installation with Conda
 - Add conda forge to the channel:
 ```conda install pytorch3d -c pytorch3d```
