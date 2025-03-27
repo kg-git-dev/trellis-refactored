@@ -13,8 +13,6 @@ from trellis.pipelines import TrellisImageTo3DPipeline
 from trellis.representations import Gaussian, MeshExtractResult
 from trellis.utils import render_utils, postprocessing_utils
 
-# Clearing cache on first load accounting for interruption during run. (Ctrl + C)
-torch.cuda.empty_cache()
 print("gradio started")
 
 MAX_SEED = np.iinfo(np.int32).max
