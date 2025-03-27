@@ -16,7 +16,7 @@ It is suggested to use Cuda 11.8 due to dependency issues.
 ```mkdir -p $CONDA_PREFIX/etc/conda/activate.d```\
 ```echo 'export CUDA_HOME=/usr/local/cuda-11.8' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh```\
 ```echo 'export PATH=$CUDA_HOME/bin:$PATH' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh```\
-```echo 'export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh```\
+```echo 'export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh```
 - Deactivate and reactivate to reset
 - ```nvcc --version``` to check if cuda 11.8 is currently active
 
