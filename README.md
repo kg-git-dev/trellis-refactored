@@ -1,3 +1,9 @@
+## Introduction
+The repo makes 3 major modifications to the original TRELLIS library:
+- implements gsplat for rendering
+- removes flexicubes and implements marchingcubes for extracting.
+- replaces nvdiffrast with pytorch3d for texturing.
+
 ## Initial Setup
 It is suggested to use Cuda 11.8 due to dependency issues. 
 - Download installer:
@@ -25,27 +31,20 @@ Pytorch 2.4.0 is recommended to be used with cuda 11.8. Install with:
 ```conda install pytorch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0  pytorch-cuda=11.8 -c pytorch -c nvidia```
 
 ## Run the setup
-```. ./setup.sh --basic --xformers --flash-attn --diffoctreerast --spconv --mipgaussian --kaolin --nvdiffrast``
+```. ./setup.sh --basic --xformers --flash-attn --diffoctreerast --spconv --mipgaussian --kaolin --nvdiffrast```
 
 ## Import all dependencies for demo
 ```. ./setup.sh --demo```
 
-## TEMPORARY WORK IN PROGRESS :Need to install gsplat separately
+## TEMPORARY WORK IN PROGRESS :Need to install gsplat and some libraries separately.
 ```pip install gsplat```
-
-## Check the gradio implementation in browser
-```python app.py```
 
 ## Add conda forge channel
 ```conda config --add channels conda-forge```\
 ```conda config --set channel_priority strict```
 
 ## Pytorch 3d installation with Conda
-- Add conda forge to the channel:
 ```conda install pytorch3d -c pytorch3d```
-
-## install pyyaml:
-```pip install pyyaml```
 
 ## BUG ALERT !!!
 - Torchvision fails after installing pytorch3d.
@@ -56,5 +55,11 @@ Pytorch 2.4.0 is recommended to be used with cuda 11.8. Install with:
 - After installing tqdm install pytorch3d again:
 ```conda install pytorch3d -c pytorch3d```
 
+## install pyyaml:
+```pip install pyyaml```
+
 ## Install tqdm
 ```pip install tqdm```
+
+## Run the gradio implementation and check in browser
+```python app.py```
