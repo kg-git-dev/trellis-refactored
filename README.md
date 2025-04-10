@@ -26,40 +26,35 @@ It is suggested to use Cuda 11.8 due to dependency issues.
 - Deactivate and reactivate to reset
 - ```nvcc --version``` to check if cuda 11.8 is currently active
 
+## Add conda forge channel
+```conda config --add channels conda-forge```\
+```conda config --set channel_priority flexible```
+
 ## Pytorch 
 Pytorch 2.4.0 is recommended to be used with cuda 11.8. Install with:
 ```conda install pytorch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0  pytorch-cuda=11.8 -c pytorch -c nvidia```
 
 ## Run the setup
-```. ./setup.sh --basic --xformers --flash-attn --diffoctreerast --spconv --mipgaussian --kaolin --nvdiffrast```
-
-## Import all dependencies for demo
-```. ./setup.sh --demo```
-
-## TEMPORARY WORK IN PROGRESS :Need to install gsplat and some libraries separately.
-```pip install gsplat```
-
-## Add conda forge channel
-```conda config --add channels conda-forge```\
-```conda config --set channel_priority strict```
+```. ./setup.sh --basic --xformers --flash-attn --diffoctreerast --spconv --mipgaussian --gsplat --demo```
 
 ## Pytorch 3d installation with Conda
 ```conda install pytorch3d -c pytorch3d```
 
-## BUG ALERT !!!
-- Torchvision fails after installing pytorch3d.
+## BUG ALERTS !!
+1. ```python app.py``` gives gradio error: argument of type 'bool' is not iterable.
+Happens due to pydantic version mismatch.
+Unistall pydantic with:
+```pip uninstall pydantic```
+Install version 2.10.6
+```pip install pydantic==2.10.6```
+
+2. Torchvision fails after installing pytorch3d.
 - Remove torchvision completely:
 ```conda remove torchvision```
 - Reinstall with full dependencies:
 ```conda install pytorch==2.4.0 torchvision==0.19.0 pytorch-cuda=11.8 -c pytorch -c nvidia```
 - After installing tqdm install pytorch3d again:
 ```conda install pytorch3d -c pytorch3d```
-
-## install pyyaml:
-```pip install pyyaml```
-
-## Install tqdm
-```pip install tqdm```
 
 ## Run the gradio implementation and check in browser
 ```python app.py```

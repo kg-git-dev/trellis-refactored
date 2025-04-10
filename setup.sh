@@ -1,5 +1,5 @@
 # Read Arguments
-TEMP=`getopt -o h --long help,new-env,basic,xformers,flash-attn,diffoctreerast,vox2seq,spconv,mipgaussian,kaolin,nvdiffrast,gsplat,demo -n 'setup.sh' -- "$@"`
+TEMP=`getopt -o h --long help,new-env,basic,xformers,flash-attn,diffoctreerast,vox2seq,spconv,mipgaussian,gsplat,demo -n 'setup.sh' -- "$@"`
 
 eval set -- "$TEMP"
 
@@ -14,8 +14,6 @@ LINEAR_ASSIGNMENT=false
 SPCONV=false
 ERROR=false
 MIPGAUSSIAN=false
-KAOLIN=false
-NVDIFFRAST=false
 GSPLAT=false
 DEMO=false
 
@@ -34,8 +32,6 @@ while true ; do
         --vox2seq) VOX2SEQ=true ; shift ;;
         --spconv) SPCONV=true ; shift ;;
         --mipgaussian) MIPGAUSSIAN=true ; shift ;;
-        --kaolin) KAOLIN=true ; shift ;;
-        --nvdiffrast) NVDIFFRAST=true ; shift ;;
         --gsplat) GSPLAT=true ; shift ;;
         --demo) DEMO=true ; shift ;;
         --) shift ; break ;;
@@ -60,8 +56,6 @@ if [ "$HELP" = true ] ; then
     echo "  --vox2seq               Install vox2seq"
     echo "  --spconv                Install spconv"
     echo "  --mipgaussian           Install mip-splatting"
-    echo "  --kaolin                Install kaolin"
-    echo "  --nvdiffrast            Install nvdiffrast"
     echo "  --gsplat                Install gsplat"
     echo "  --demo                  Install all dependencies for demo"
     return
@@ -178,33 +172,6 @@ if [ "$FLASHATTN" = true ] ; then
     fi
 fi
 
-if [ "$KAOLIN" = true ] ; then
-    # install kaolin
-    if [ "$PLATFORM" = "cuda" ] ; then
-        case $PYTORCH_VERSION in
-            2.0.1) pip install kaolin -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.0.1_cu118.html;;
-            2.1.0) pip install kaolin -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.1.0_cu118.html;;
-            2.1.1) pip install kaolin -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.1.1_cu118.html;;
-            2.2.0) pip install kaolin -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.2.0_cu118.html;;
-            2.2.1) pip install kaolin -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.2.1_cu118.html;;
-            2.2.2) pip install kaolin -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.2.2_cu118.html;;
-            2.4.0) pip install kaolin -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.4.0_cu121.html;;
-            *) echo "[KAOLIN] Unsupported PyTorch version: $PYTORCH_VERSION" ;;
-        esac
-    else
-        echo "[KAOLIN] Unsupported platform: $PLATFORM"
-    fi
-fi
-
-if [ "$NVDIFFRAST" = true ] ; then
-    if [ "$PLATFORM" = "cuda" ] ; then
-        mkdir -p /tmp/extensions
-        git clone https://github.com/NVlabs/nvdiffrast.git /tmp/extensions/nvdiffrast
-        pip install /tmp/extensions/nvdiffrast
-    else
-        echo "[NVDIFFRAST] Unsupported platform: $PLATFORM"
-    fi
-fi
 
 if [ "$DIFFOCTREERAST" = true ] ; then
     if [ "$PLATFORM" = "cuda" ] ; then
@@ -255,7 +222,7 @@ fi
 
 if [ "$GSPLAT" = true ] ; then
     if [ "$PLATFORM" = "cuda" ] ; then
-        pip install git+https://github.com/nerfstudio-project/gsplat
+        pip install gsplat
     else
         echo "[GSPLAT] Unsupported platform: $PLATFORM"
     fi
