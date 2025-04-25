@@ -2,7 +2,6 @@ from typing import *
 import numpy as np
 import torch
 import utils3d
-import nvdiffrast.torch as dr
 from tqdm import tqdm
 import trimesh
 import trimesh.visual
