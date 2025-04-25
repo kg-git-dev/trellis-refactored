@@ -2,13 +2,7 @@ from typing import *
 import numpy as np
 import torch
 import utils3d
-from pytorch3d.renderer import (
-    FoVPerspectiveCameras,
-    RasterizationSettings,
-    MeshRasterizer,
-    TexturesUV,
-)
-from pytorch3d.structures import Meshes
+import nvdiffrast.torch as dr
 from tqdm import tqdm
 import trimesh
 import trimesh.visual
@@ -21,72 +15,73 @@ from PIL import Image
 from .random_utils import sphere_hammersley_sequence
 from .render_utils import render_multiview
 from ..representations import Strivec, Gaussian, MeshExtractResult
-
+from pytorch3d.renderer import (FoVPerspectiveCameras,
+                                RasterizationSettings,
+                                MeshRasterizer,
+                                TexturesUV)
+from pytorch3d.structures import Meshes
+import torch.nn.functional as F
 
 @torch.no_grad()
 def _fill_holes(
-    verts: torch.Tensor,
-    faces: torch.Tensor,
-    max_hole_size: float = 0.04,
-    max_hole_nbe: int = 32,
-    resolution: int = 128,
-    num_views: int = 500,
-    debug: bool = False,
-    verbose: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    verts,
+    faces,
+    max_hole_size=0.04,
+    max_hole_nbe=32,
+    resolution=128,
+    num_views=500,
+    debug=False,
+    verbose=False
+):
     """
-    Rasterize a mesh from multiple views and remove invisible faces (PyTorch3D version).
-    """
-    device = verts.device
+    Rasterize a mesh from multiple views and remove invisible faces.
+    Also includes postprocessing to:
+        1. Remove connected components that are have low visibility.
+        2. Mincut to remove faces at the inner side of the mesh connected to the outer side with a small hole.
 
-    # Construct cameras (PyTorch3D expects y-down coordinate system)
-    yaws, pitchs = [], []
+    Args:
+        verts (torch.Tensor): Vertices of the mesh. Shape (V, 3).
+        faces (torch.Tensor): Faces of the mesh. Shape (F, 3).
+        max_hole_size (float): Maximum area of a hole to fill.
+        resolution (int): Resolution of the rasterization.
+        num_views (int): Number of views to rasterize the mesh.
+        verbose (bool): Whether to print progress.
+    """
+    # Construct cameras
+    yaws = []
+    pitchs = []
     for i in range(num_views):
         y, p = sphere_hammersley_sequence(i, num_views)
         yaws.append(y)
         pitchs.append(p)
-    yaws = torch.tensor(yaws, device=device)
-    pitchs = torch.tensor(pitchs, device=device)
+    yaws = torch.tensor(yaws).cuda()
+    pitchs = torch.tensor(pitchs).cuda()
     radius = 2.0
-    fov = torch.deg2rad(torch.tensor(40, device=device))
-
-    # PyTorch3D camera setup
-    cameras = []
-    for yaw, pitch in zip(yaws, pitchs):
-        origin = torch.tensor([
+    fov = torch.deg2rad(torch.tensor(40)).cuda()
+    projection = utils3d.torch.perspective_from_fov_xy(fov, fov, 1, 3)
+    views = []
+    for (yaw, pitch) in zip(yaws, pitchs):
+        orig = torch.tensor([
             torch.sin(yaw) * torch.cos(pitch),
             torch.cos(yaw) * torch.cos(pitch),
             torch.sin(pitch),
-        ], device=device) * radius
-        R = utils3d.torch.look_at_rotation(origin, torch.zeros(3, device=device))
-        T = -R @ origin.unsqueeze(-1)
-        cameras.append(FoVPerspectiveCameras(
-            device=device,
-            R=R.T.unsqueeze(0),  # PyTorch3D expects R.T
-            T=T.T.unsqueeze(0),
-            fov=fov,
-        ))
+        ]).cuda().float() * radius
+        view = utils3d.torch.view_look_at(orig, torch.tensor([0, 0, 0]).float().cuda(), torch.tensor([0, 0, 1]).float().cuda())
+        views.append(view)
+    views = torch.stack(views, dim=0)
 
-    # Rasterization settings
-    raster_settings = RasterizationSettings(
-        image_size=resolution,
-        blur_radius=0.0,
-        faces_per_pixel=1,
-    )
-
-    # Initialize visibility counter
-    visibility = torch.zeros(faces.shape[0], dtype=torch.int32, device=device)
-
-    # Rasterize from multiple views
-    meshes = Meshes(verts=verts.unsqueeze(0), faces=faces.unsqueeze(0))
-    for i, cam in enumerate(tqdm(cameras, disable=not verbose, desc="Rasterizing")):
-        rasterizer = MeshRasterizer(cameras=cam, raster_settings=raster_settings)
-        fragments = rasterizer(meshes)
-        visible_faces = fragments.pix_to_face.unique()  # Get visible face indices
-        visible_faces = visible_faces[visible_faces >= 0]  # Filter background
-        visibility[visible_faces] += 1
-
-    visibility = visibility.float() / num_views
+    # Rasterize
+    visblity = torch.zeros(faces.shape[0], dtype=torch.int32, device=verts.device)
+    rastctx = utils3d.torch.RastContext(backend='cuda')
+    for i in tqdm(range(views.shape[0]), total=views.shape[0], disable=not verbose, desc='Rasterizing'):
+        view = views[i]
+        buffers = utils3d.torch.rasterize_triangle_faces(
+            rastctx, verts[None], faces, resolution, resolution, view=view, projection=projection
+        )
+        face_id = buffers['face_id'][0][buffers['mask'][0] > 0.95] - 1
+        face_id = torch.unique(face_id).long()
+        visblity[face_id] += 1
+    visblity = visblity.float() / num_views
     
     # Mincut
     ## construct outer faces
@@ -95,11 +90,11 @@ def _fill_holes(
     connected_components = utils3d.torch.compute_connected_components(faces, edges, face2edge)
     outer_face_indices = torch.zeros(faces.shape[0], dtype=torch.bool, device=faces.device)
     for i in range(len(connected_components)):
-        outer_face_indices[connected_components[i]] = visibility[connected_components[i]] > min(max(visibility[connected_components[i]].quantile(0.75).item(), 0.25), 0.5)
+        outer_face_indices[connected_components[i]] = visblity[connected_components[i]] > min(max(visblity[connected_components[i]].quantile(0.75).item(), 0.25), 0.5)
     outer_face_indices = outer_face_indices.nonzero().reshape(-1)
     
     ## construct inner faces
-    inner_face_indices = torch.nonzero(visibility == 0).reshape(-1)
+    inner_face_indices = torch.nonzero(visblity == 0).reshape(-1)
     if verbose:
         tqdm.write(f'Found {inner_face_indices.shape[0]} invisible faces')
     if inner_face_indices.shape[0] == 0:
@@ -143,7 +138,7 @@ def _fill_holes(
     cutting_edges = []
     for cc in to_remove_cc:
         #### check if the connected component has low visibility
-        visblity_median = visibility[remove_face_indices[cc]].median()
+        visblity_median = visblity[remove_face_indices[cc]].median()
         if debug:
             tqdm.write(f'visblity_median: {visblity_median}')
         if visblity_median > 0.25:
@@ -283,80 +278,107 @@ def parametrize_mesh(vertices: np.array, faces: np.array):
 
 
 def bake_texture(
-    vertices: np.ndarray,
-    faces: np.ndarray,
-    uvs: np.ndarray,
-    observations: List[np.ndarray],
-    masks: List[np.ndarray],
-    extrinsics: List[np.ndarray],
-    intrinsics: List[np.ndarray],
+    vertices: np.array,
+    faces: np.array,
+    uvs: np.array,
+    observations: List[np.array],
+    masks: List[np.array],
+    extrinsics: List[np.array],
+    intrinsics: List[np.array],
     texture_size: int = 2048,
     near: float = 0.1,
     far: float = 10.0,
-    mode: Literal["fast", "opt"] = "opt",
+    mode: Literal['fast', 'opt'] = 'opt',
     lambda_tv: float = 1e-2,
     verbose: bool = False,
-) -> np.ndarray:
+):
     """
-    Bake texture using PyTorch3D (replaces NVDiffrast-based baking).
+    Bake texture to a mesh from multiple observations.
+
+    Args:
+        vertices (np.array): Vertices of the mesh. Shape (V, 3).
+        faces (np.array): Faces of the mesh. Shape (F, 3).
+        uvs (np.array): UV coordinates of the mesh. Shape (V, 2).
+        observations (List[np.array]): List of observations. Each observation is a 2D image. Shape (H, W, 3).
+        masks (List[np.array]): List of masks. Each mask is a 2D image. Shape (H, W).
+        extrinsics (List[np.array]): List of extrinsics. Shape (4, 4).
+        intrinsics (List[np.array]): List of intrinsics. Shape (3, 3).
+        texture_size (int): Size of the texture.
+        near (float): Near plane of the camera.
+        far (float): Far plane of the camera.
+        mode (Literal['fast', 'opt']): Mode of texture baking.
+        lambda_tv (float): Weight of total variation loss in optimization.
+        verbose (bool): Whether to print progress.
     """
+
     device = "cuda"
-    vertices = torch.tensor(vertices, device=device)
-    faces = torch.tensor(faces.astype(np.int32), device=device)
-    uvs = torch.tensor(uvs, device=device)
-    textures = torch.zeros((1, texture_size, texture_size, 3), device=device)
 
-    # Convert observations to PyTorch tensors
-    obs_tensors = [torch.tensor(obs / 255.0, device=device) for obs in observations]
-    mask_tensors = [torch.tensor(m > 0, device=device) for m in masks]
+    vertices = torch.tensor(vertices).cuda()
+    faces = torch.tensor(faces.astype(np.int32)).cuda()
+    uvs = torch.tensor(uvs).cuda()
+    observations = [torch.tensor(obs / 255.0).float().cuda() for obs in observations]
+    masks = [torch.tensor(m>0).bool().cuda() for m in masks]
+    views = [utils3d.torch.extrinsics_to_view(torch.tensor(extr).cuda()) for extr in extrinsics]
+    projections = [utils3d.torch.intrinsics_to_perspective(torch.tensor(intr).cuda(), near, far) for intr in intrinsics]
 
-    # Create PyTorch3D cameras
-    cameras = []
-    for extr, intr in zip(extrinsics, intrinsics):
-        R = torch.tensor(extr[:3, :3], device=device).unsqueeze(0)
-        T = torch.tensor(extr[:3, 3], device=device).unsqueeze(0)
-        cameras.append(FoVPerspectiveCameras(
-            device=device,
-            R=R,
-            T=T,
-            znear=near,
-            zfar=far,
-            fov=2 * torch.atan2(intr[1, 2], intr[1, 1]),
-        ))
+    if mode == 'fast':
+        texture = torch.zeros((texture_size * texture_size, 3), dtype=torch.float32).cuda()
+        texture_weights = torch.zeros((texture_size * texture_size), dtype=torch.float32).cuda()
+        rastctx = utils3d.torch.RastContext(backend='cuda')
+        for observation, view, projection in tqdm(zip(observations, views, projections), total=len(observations), disable=not verbose, desc='Texture baking (fast)'):
+            with torch.no_grad():
+                rast = utils3d.torch.rasterize_triangle_faces(
+                    rastctx, vertices[None], faces, observation.shape[1], observation.shape[0], uv=uvs[None], view=view, projection=projection
+                )
+                uv_map = rast['uv'][0].detach().flip(0)
+                mask = rast['mask'][0].detach().bool() & masks[0]
+            
+            # nearest neighbor interpolation
+            uv_map = (uv_map * texture_size).floor().long()
+            obs = observation[mask]
+            uv_map = uv_map[mask]
+            idx = uv_map[:, 0] + (texture_size - uv_map[:, 1] - 1) * texture_size
+            texture = texture.scatter_add(0, idx.view(-1, 1).expand(-1, 3), obs)
+            texture_weights = texture_weights.scatter_add(0, idx, torch.ones((obs.shape[0]), dtype=torch.float32, device=texture.device))
 
-    if mode == "fast":
-        # Fast mode: Project observations to UV space
-        for cam, obs, mask in zip(cameras, obs_tensors, mask_tensors):
-            meshes = Meshes(
-                verts=vertices.unsqueeze(0),
-                faces=faces.unsqueeze(0),
-                textures=TexturesUV(
-                    maps=textures,
-                    faces_uvs=faces.unsqueeze(0),
-                    verts_uvs=uvs.unsqueeze(0),
-                ),
-            )
-            rasterizer = MeshRasterizer(
-                cameras=cam,
-                raster_settings=RasterizationSettings(
-                    image_size=obs.shape[:2],
-                    blur_radius=0.0,
-                    faces_per_pixel=1,
-                ),
-            )
-            fragments = rasterizer(meshes)
-            visible_pixels = (fragments.pix_to_face >= 0) & mask.unsqueeze(-1)
-            # Update texture (simplified projection)
-            # ... (implement UV projection logic) ...
+        mask = texture_weights > 0
+        texture[mask] /= texture_weights[mask][:, None]
+        texture = np.clip(texture.reshape(texture_size, texture_size, 3).cpu().numpy() * 255, 0, 255).astype(np.uint8)
 
-    elif mode == "opt":
+        # inpaint
+        mask = (texture_weights == 0).cpu().numpy().astype(np.uint8).reshape(texture_size, texture_size)
+        texture = cv2.inpaint(texture, mask, 3, cv2.INPAINT_TELEA)
+
+    elif mode == 'opt':
         # Optimization-based texture baking
+
+        # Create PyTorch3D cameras
+        cameras = []
+        print("camera creation start")
+        for extr, intr in zip(extrinsics, intrinsics):
+            
+            R = torch.tensor(extr[:3, :3], device=device).unsqueeze(0)
+            T = torch.tensor(extr[:3, 3], device=device).unsqueeze(0)
+            intr_tensor = torch.tensor(intr, device=device)
+            fov = 2 * torch.atan2(intr_tensor[1, 2], intr_tensor[1, 1])
+            cameras.append(FoVPerspectiveCameras(
+                device=device,
+                R=R,
+                T=T,
+                znear=near,
+                zfar=far,
+                fov=fov,
+            ))
+
+        textures = torch.zeros((1, texture_size, texture_size, 3), device=device)
         textures = torch.nn.Parameter(textures)
         optimizer = torch.optim.Adam([textures], lr=1e-2)
 
         for step in tqdm(range(1000), disable=not verbose, desc="Texture optimization"):
+            
             loss = 0.0
-            for cam, obs, mask in zip(cameras, obs_tensors, mask_tensors):
+            for cam, obs, mask in zip(cameras, observations, masks):
+                                
                 meshes = Meshes(
                     verts=vertices.unsqueeze(0),
                     faces=faces.unsqueeze(0),
@@ -374,10 +396,16 @@ def bake_texture(
                         faces_per_pixel=1,
                     ),
                 )
+                obs = obs.float()
+                mask = mask.bool()
+                
                 fragments = rasterizer(meshes)
-                rendered = meshes.textures.sample_textures(fragments.bary_coords)
-                mask = (fragments.pix_to_face >= 0) & mask.unsqueeze(-1)
-                loss += F.mse_loss(rendered[mask], obs[mask])
+                rendered = meshes.textures.sample_textures(fragments)
+                rendered = rendered.squeeze(0).squeeze(-2)  # [H,W,3]
+                
+                visible = (fragments.zbuf[..., 0] >= 0).squeeze(0).squeeze(-1)
+                final_mask = visible & mask
+                loss += F.mse_loss(rendered[mask], obs[final_mask])
 
             # Total variation regularization
             if lambda_tv > 0:

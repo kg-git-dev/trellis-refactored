@@ -1,3 +1,7 @@
+## WARNING
+The texturing process is a little slow for less powerful GPUs at the moment. Optimization is a work in progress. To get results faster goto ```trellis/utils/postprocessing_utils.py``` and reduce the range at line 377:
+```for step in tqdm(range(1000), disable=not verbose, desc="Texture optimization"):```
+
 ## Introduction
 The repo makes 3 major modifications to the original TRELLIS library:
 - implements gsplat for rendering
