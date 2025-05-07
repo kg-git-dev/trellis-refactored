@@ -30,7 +30,7 @@ def _fill_holes(
     resolution=128,
     num_views=500,
     debug=False,
-    verbose=False
+    verbose=True
 ):
     """
     Rasterize a mesh from multiple views and remove invisible faces.
@@ -205,13 +205,13 @@ def postprocess_mesh(
     faces: np.array,
     simplify: bool = True,
     simplify_ratio: float = 0.9,
-    fill_holes: bool = True,
+    fill_holes: bool = False,
     fill_holes_max_hole_size: float = 0.04,
     fill_holes_max_hole_nbe: int = 32,
     fill_holes_resolution: int = 1024,
     fill_holes_num_views: int = 1000,
     debug: bool = False,
-    verbose: bool = False,
+    verbose: bool = True,
 ):
     """
     Postprocess a mesh by simplifying, removing invisible faces, and removing isolated pieces.
@@ -289,7 +289,7 @@ def bake_texture(
     far: float = 10.0,
     mode: Literal['fast', 'opt'] = 'opt',
     lambda_tv: float = 1e-2,
-    verbose: bool = False,
+    verbose: bool = True,
 ):
     """
     Bake texture to a mesh from multiple observations.
@@ -353,7 +353,7 @@ def bake_texture(
 
         # Create PyTorch3D cameras
         cameras = []
-        print("camera creation start")
+
         for extr, intr in zip(extrinsics, intrinsics):
             
             R = torch.tensor(extr[:3, :3], device=device).unsqueeze(0)
@@ -373,8 +373,10 @@ def bake_texture(
         textures = torch.nn.Parameter(textures)
         optimizer = torch.optim.Adam([textures], lr=1e-2)
 
-        for step in tqdm(range(1000), disable=not verbose, desc="Texture optimization"):
+        for step in tqdm(range(10), disable=not verbose, desc="Texture optimization"):
             
+            print(f"running texture loop {step} of {range}")
+
             loss = 0.0
             for cam, obs, mask in zip(cameras, observations, masks):
                                 
@@ -431,7 +433,7 @@ def to_glb(
     app_rep: Union[Strivec, Gaussian],
     mesh: MeshExtractResult,
     simplify: float = 0.95,
-    fill_holes: bool = True,
+    fill_holes: bool = False,
     fill_holes_max_size: float = 0.04,
     texture_size: int = 1024,
     debug: bool = False,
