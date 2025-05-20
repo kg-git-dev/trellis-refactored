@@ -17,7 +17,6 @@ from pytorch3d.renderer import (FoVPerspectiveCameras,
                                 RasterizationSettings,
                                 MeshRasterizer,
                                 TexturesUV,
-                                OrthographicCameras
                                 )
 from pytorch3d.structures import Meshes
 
@@ -278,7 +277,6 @@ def parametrize_mesh(vertices: np.array, faces: np.array):
 
     return vertices, faces, uvs
 
-
 def bake_texture(
     vertices: np.array,
     faces: np.array,
@@ -288,58 +286,57 @@ def bake_texture(
     extrinsics: List[np.array],
     intrinsics: List[np.array],
     texture_size: int = 2048,
-    near: float = 0.01,
-    far: float = 100.0,
-    verbose: bool = False
+    near: float = 0.1,
+    far: float = 10.0,
+    verbose: bool = False,
 ):
-    """
-    Optimized texture baking with parallel processing.
-    """
     # Convert inputs to torch tensors
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vertices = torch.tensor(vertices, dtype=torch.float32, device=device)
     faces = torch.tensor(faces.astype(np.int32), dtype=torch.int64, device=device)
     
     # Flip V coordinates to fix texture orientation
-    uvs = torch.tensor(uvs, dtype=torch.float32, device=device)
-    uvs[:, 1] = 1.0 - uvs[:, 1]  # Flip V coordinate
+    uvs_original = torch.tensor(uvs, dtype=torch.float32, device=device)
+    uvs = torch.clone(uvs_original)
+    uvs[:, 1] = 1.0 - uvs_original[:, 1]  # Flip V coordinates
     
-    # Initialize texture and weights (flattened for efficient scatter ops)
+    # Initialize texture and weights as flat buffers
     texture_buffer = torch.zeros((texture_size * texture_size, 3), dtype=torch.float32, device=device)
     weight_buffer = torch.zeros((texture_size * texture_size, 1), dtype=torch.float32, device=device)
     
-    # Create cameras with proper depth settings
+    # Create cameras
     cameras = []
-    for i, (extr, intr) in enumerate(zip(extrinsics, intrinsics)):
+    for extr, intr in zip(extrinsics, intrinsics):
         R = torch.tensor(extr[:3, :3], dtype=torch.float32, device=device)
         T = torch.tensor(extr[:3, 3], dtype=torch.float32, device=device)
         
         fx, fy = intr[0, 0], intr[1, 1]
-        fov = 2 * np.arctan(1 / (2 * fx)) * 180 / np.pi
-        
         cameras.append(FoVPerspectiveCameras(
             device=device,
             R=R[None],
             T=T[None],
             znear=near,
             zfar=far,
-            fov=fov,
+            fov=2 * np.arctan(1 / (2 * fx)) * 180 / np.pi,
         ))
-
-    # Create mesh with UVs
-    faces_uvs = faces.unsqueeze(0)
-    verts_uvs = uvs.unsqueeze(0)
     
-    # Process each view with enhanced rasterization
+    # Create mesh
+    faces_uvs = faces.unsqueeze(0)  # Add batch dimension
+    verts_uvs = uvs.unsqueeze(0)    # Add batch dimension
+    
+    # Process each view
     for view_idx in tqdm(range(len(cameras)), disable=not verbose):
         camera = cameras[view_idx]
         observation = torch.tensor(observations[view_idx] / 255.0, dtype=torch.float32, device=device)
         mask = torch.tensor(masks[view_idx] > 0, dtype=torch.bool, device=device)
         H, W = observation.shape[:2]
         
-        # Create dummy texture for rasterization
+        # Create a temporary texture for this view
+        view_texture = torch.zeros((1, texture_size, texture_size, 3), dtype=torch.float32, device=device)
+        
+        # Create mesh with current texture
         textures = TexturesUV(
-            maps=torch.zeros((1, texture_size, texture_size, 3), device=device),
+            maps=view_texture,
             faces_uvs=faces_uvs,
             verts_uvs=verts_uvs,
         )
@@ -350,15 +347,14 @@ def bake_texture(
             textures=textures,
         )
         
-        # Enhanced rasterization settings
+        # Render to get face indices and barycentric coordinates
         raster_settings = RasterizationSettings(
             image_size=(H, W),
             blur_radius=0.0,
-            faces_per_pixel=10,
+            faces_per_pixel=5,
             perspective_correct=True,
-            clip_barycentric_coords=False,
+            clip_barycentric_coords=True,
             cull_backfaces=False,
-            z_clip_value=0.0001,
         )
         
         rasterizer = MeshRasterizer(
@@ -367,33 +363,38 @@ def bake_texture(
         )
         
         fragments = rasterizer(mesh)
-        pix_to_face = fragments.pix_to_face[0, ..., 0]
-        bary_coords = fragments.bary_coords[0, ..., 0, :]
         
-        # Combine visibility with mask
+        # Get pixel-to-face mapping and barycentric coordinates
+        pix_to_face = fragments.pix_to_face[0, ..., 0]  # [H, W]
+        bary_coords = fragments.bary_coords[0, ..., 0, :]  # [H, W, 3]
+        
+        # Create mask for valid pixels (visible faces and within original mask)
         valid_pixels = (pix_to_face >= 0) & mask
         
-        if not valid_pixels.any():
-            if verbose:
-                print(f"View {view_idx} contributed no visible pixels")
+        if valid_pixels.sum() == 0:
             continue
         
-        # Get data for valid pixels
-        valid_faces = pix_to_face[valid_pixels]
-        valid_bary = bary_coords[valid_pixels]
-        valid_colors = observation[valid_pixels]
+        # Get face indices and colors for valid pixels
+        valid_faces = pix_to_face[valid_pixels]  # [N_valid]
+        valid_bary = bary_coords[valid_pixels]   # [N_valid, 3]
+        valid_colors = observation[valid_pixels] # [N_valid, 3]
         
-        # Vectorized UV coordinate calculation
-        face_verts_idx = faces[valid_faces]
-        face_uvs = uvs[face_verts_idx]
-        pixel_uvs = torch.sum(face_uvs * valid_bary.unsqueeze(-1), dim=1)
+        # Get vertices for each face
+        face_verts_idx = faces[valid_faces]  # [N_valid, 3]
         
-        # Convert to texture coordinates
+        # Get UV coordinates for these vertices (vectorized approach)
+        face_uvs = uvs[face_verts_idx]  # [N_valid, 3, 2]
+        
+        # Compute UV coordinates using barycentric interpolation (vectorized)
+        pixel_uvs = torch.sum(face_uvs * valid_bary.unsqueeze(-1), dim=1)  # [N_valid, 2]
+        
+        # Convert to texture coordinates and flatten
         tex_coords = (pixel_uvs * (texture_size - 1)).round().clamp(0, texture_size - 1).long()
-        tex_coords_flat = tex_coords[:, 1] * texture_size + tex_coords[:, 0]
+        # v (y) coordinate first, then u (x)
+        tex_coords_flat = tex_coords[:, 1] * texture_size + tex_coords[:, 0]  # [N_valid]
         
-        # Improved confidence using product of barycentric coords
-        confidence = torch.prod(valid_bary, dim=1, keepdim=True)
+        # Use product of barycentric coordinates as confidence weight
+        confidence = torch.prod(valid_bary, dim=1, keepdim=True)  # [N_valid, 1]
         
         # Parallel accumulation using scatter_add
         texture_buffer.scatter_add_(
@@ -401,41 +402,87 @@ def bake_texture(
             tex_coords_flat.unsqueeze(-1).expand(-1, 3),
             valid_colors * confidence.expand(-1, 3)
         )
+        
         weight_buffer.scatter_add_(
             0,
             tex_coords_flat.unsqueeze(-1),
             confidence
         )
     
-    # Normalize texture
-    texture_buffer = texture_buffer.view(texture_size, texture_size, 3)
-    weight_buffer = weight_buffer.view(texture_size, texture_size, 1)
+    if verbose:
+        print("Processing completed, normalizing texture...")
     
-    # Create final texture
-    final_texture = torch.zeros_like(texture_buffer)
-    valid_mask = weight_buffer > 0
-    for c in range(3):  # Process each channel separately
-        channel_data = texture_buffer[..., c]  # [H,W]
-        channel_data[valid_mask.squeeze(-1)] /= weight_buffer[valid_mask]
-        final_texture[..., c] = channel_data
+    # Create a final texture array
+    final_texture = np.zeros((texture_size, texture_size, 3), dtype=np.float32)
     
-    # Convert to numpy and fill small holes
-    texture_np = final_texture.cpu().numpy()
-    valid_mask_np = valid_mask.cpu().numpy().squeeze()
+    # Get numpy arrays
+    texture_np = texture_buffer.cpu().numpy()
+    weight_np = weight_buffer.cpu().numpy()
     
-    if np.sum(valid_mask_np) < texture_size * texture_size * 0.95:
+    # Reshape the flat arrays to 2D for easier processing
+    texture_np_reshaped = texture_np.reshape(texture_size, texture_size, 3)
+    weight_np_reshaped = weight_np.reshape(texture_size, texture_size, 1)
+    
+    # Create a mask of valid pixels (weights > 0)
+    valid_mask = weight_np_reshaped > 0
+    
+    # Vectorized normalization using numpy broadcasting
+    valid_mask = weight_np_reshaped.squeeze(-1) > 0  # [H, W]
+    final_texture = np.divide(
+        texture_np_reshaped,
+        weight_np_reshaped,
+        where=valid_mask[..., None],  # Expand mask to 3 channels
+        out=np.zeros_like(texture_np_reshaped)
+    )
+
+    # Enhanced hole filling pipeline
+    if np.sum(valid_mask) < texture_size * texture_size * 0.95:
         if verbose:
-            print(f"Filling holes ({100*(1-valid_mask_np.mean()):.1f}% missing pixels)")
+            print(f"Filling holes ({100*(1-valid_mask.mean()):.1f}% missing pixels)")
         
+        # Convert to uint8 once
+        texture_8u = np.clip(final_texture * 255, 0, 255).astype(np.uint8)
+        
+        # Create hole mask (1 = hole, 0 = valid)
+        hole_mask = (1 - valid_mask.astype(np.uint8)) * 255
+        
+        # Multi-stage filling
+        filled_texture = np.zeros_like(texture_8u)
+        
+        # 1. Edge-aware filtering for small holes
         for c in range(3):
-            channel = (texture_np[:, :, c] * 255).astype(np.uint8)
-            hole_mask = (1 - valid_mask_np).astype(np.uint8)
-            texture_np[:, :, c] = cv2.inpaint(channel, hole_mask, 3, cv2.INPAINT_TELEA) / 255.0
-    
-    # Final conversion
-    final_texture = np.clip(texture_np * 255, 0, 255).astype(np.uint8)
-    
-    return final_texture
+            filled_texture[..., c] = cv2.inpaint(
+                texture_8u[..., c],
+                hole_mask,
+                inpaintRadius=5,  # Increased radius for better propagation
+                flags=cv2.INPAINT_TELEA
+            )
+        
+        # 2. Content-aware fill for remaining holes using NS method
+        final_filled = np.zeros_like(filled_texture)
+        for c in range(3):
+            final_filled[..., c] = cv2.inpaint(
+                filled_texture[..., c],
+                hole_mask,
+                inpaintRadius=10,  # Larger radius for big holes
+                flags=cv2.INPAINT_NS  # Navier-Stokes based method
+            )
+        
+        # 3. Blend filled areas with original using mask
+        texture = np.where(
+            valid_mask[..., None],  # Only keep original valid pixels
+            texture_8u,
+            final_filled
+        ).astype(np.uint8)
+    else:
+        texture = np.clip(final_texture * 255, 0, 255).astype(np.uint8)
+
+    if verbose:
+        print("All processing completed.")
+
+    return texture
+
+
 
 def to_glb(
     app_rep: Union[Strivec, Gaussian],
