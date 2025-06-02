@@ -2,7 +2,6 @@ from typing import *
 import numpy as np
 import torch
 import utils3d
-import nvdiffrast.torch as dr
 from tqdm import tqdm
 import trimesh
 import pyvista as pv
@@ -11,7 +10,6 @@ import igraph
 from .random_utils import sphere_hammersley_sequence
 from ..representations import Strivec, Gaussian, MeshExtractResult
 
-import kaolin.render.mesh as kres
 from .bake_texture import bake_texture_and_return_mesh
 
 
