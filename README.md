@@ -1,15 +1,9 @@
 ## WARNING
-1. This is a work in progress repo under active development. Currently a feature to fill holes in mesh is turned off due to nvdiffrast dependency. Work in progress to replace. 
-
-2. ~~The texturing process is a little slow for less powerful GPUs at the moment. Optimization is a work in progress. To get results faster goto ```trellis/utils/postprocessing_utils.py``` and reduce the range at line 377:
-```for step in tqdm(range(1000), disable=not verbose, desc="Texture optimization"):```
-At 1000 loops, RTX 3090 user reported a time frame of 30 mins for glb extraction; 3080ti reported 1 hour. If time is not an issue increase the range to 2500. This should give better textures.~~\
-I broke the texturing process trying to optimize. Not recommended to download this repo at the moment if you need textures. Will update soon. SORRY. 
+This is a work in progress repo under active development. Texturing is not optimal currently. Work in progress. Expect fix in the next commit. Sorry and Thank you. 
 
 ## Introduction
-The repo makes 3 major modifications to the original TRELLIS library:
+The repo makes 2 major modifications to the original TRELLIS library:
 - implements gsplat for rendering
-- removes flexicubes and implements marchingcubes for extracting.
 - replaces nvdiffrast with pytorch3d for texturing.
 
 ## Initial Setup
