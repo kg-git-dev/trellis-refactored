@@ -13,6 +13,11 @@ from trellis.pipelines import TrellisImageTo3DPipeline
 from trellis.representations import Gaussian, MeshExtractResult
 from trellis.utils import render_utils, postprocessing_utils
 
+import time
+import csv
+import os
+from datetime import datetime
+
 
 MAX_SEED = np.iinfo(np.int32).max
 TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp')
@@ -27,6 +32,35 @@ def start_session(req: gr.Request):
 def end_session(req: gr.Request):
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     shutil.rmtree(user_dir)
+
+class GlobalTimer:
+    def __init__(self):
+        self.start_time = None
+
+    def start(self):
+        self.start_time = datetime.now()
+
+    def stop_and_log(self, name="image_to_glb"):
+        if self.start_time is None:
+            print("Timer was not started.")
+            return
+
+        end_time = datetime.now()
+        elapsed = (end_time - self.start_time).total_seconds()
+
+        # Save to CSV
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        log_path = os.path.join(script_dir, "..", "timing_log.csv")
+        file_exists = os.path.isfile(log_path)
+        with open(log_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(['task', 'start_time', 'end_time', 'elapsed_seconds'])
+            writer.writerow([name, self.start_time.isoformat(), end_time.isoformat(), elapsed])
+
+        self.start_time = None
+
+
 
 
 def preprocess_image(image: Image.Image) -> Image.Image:
@@ -104,6 +138,7 @@ def get_seed(randomize_seed: bool, seed: int) -> int:
     """
     return np.random.randint(0, MAX_SEED) if randomize_seed else seed
 
+timer = GlobalTimer()
 
 def image_to_3d(
     image: Image.Image,
@@ -135,6 +170,9 @@ def image_to_3d(
         dict: The information of the generated 3D model.
         str: The path to the video of the 3D model.
     """
+    
+    timer.start()
+
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     if not is_multiimage:
         outputs = pipeline.run(
@@ -194,13 +232,21 @@ def extract_glb(
     Returns:
         str: The path to the extracted GLB file.
     """
-    user_dir = os.path.join(TMP_DIR, str(req.session_hash))
-    gs, mesh = unpack_state(state)
-    glb = postprocessing_utils.to_glb(gs, mesh, simplify=mesh_simplify, texture_size=texture_size, verbose=True)
-    glb_path = os.path.join(user_dir, 'sample.glb')
-    glb.export(glb_path)
-    torch.cuda.empty_cache()
+
+    try:
+        user_dir = os.path.join(TMP_DIR, str(req.session_hash))
+        gs, mesh = unpack_state(state)
+        glb = postprocessing_utils.to_glb(gs, mesh, simplify=mesh_simplify, texture_size=texture_size, verbose=True)
+        glb_path = os.path.join(user_dir, 'sample.glb')
+        glb.export(glb_path)
+        torch.cuda.empty_cache()
+    except Exception as e:
+        print(f"[Error] {e}")
+        timer.stop_and_log(f"ERROR: {e}")
+        raise  
+
     print("GLB extraction completed")
+    timer.stop_and_log("image_to_3d -> extract_glb flow")
     return glb_path, glb_path
 
 

@@ -192,12 +192,11 @@ def _fill_holes(
     return verts, faces
 
 
+
 def to_glb(
     app_rep: Union[Strivec, Gaussian],
     mesh: MeshExtractResult,
     simplify: float = 0.95,
-    fill_holes: bool = True,
-    fill_holes_max_size: float = 0.04,
     texture_size: int = 1024,
     debug: bool = False,
     verbose: bool = True,

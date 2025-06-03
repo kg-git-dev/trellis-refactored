@@ -8,6 +8,7 @@ import xatlas
 from .random_utils import sphere_hammersley_sequence
 from tqdm import tqdm
 import pyvista as pv
+import utils3d
 
 # from .render_utils import get_renderer
 from ..representations import Octree, Gaussian, MeshExtractResult
@@ -23,14 +24,10 @@ from pytorch3d.renderer import (
     look_at_view_transform,
     FoVPerspectiveCameras,
     PerspectiveCameras,
-    PointLights,
     RasterizationSettings,
     MeshRenderer,
     MeshRasterizer,
-    SoftPhongShader,
     TexturesUV,
-    BlendParams,
-    HardPhongShader
 )
 from pytorch3d.renderer.mesh.rasterize_meshes import rasterize_meshes
 from pytorch3d.transforms import Transform3d
@@ -39,6 +36,9 @@ import cv2
 import matplotlib.pyplot as plt
 import os
 import csv
+
+from pymeshfix import _meshfix
+import igraph
 
 
 def suppress_traceback(fn):
@@ -395,6 +395,12 @@ def postprocess_mesh(
             tqdm.write(f'After decimate: {vertices.shape[0]} vertices, {faces.shape[0]} faces')
         if verbose:
             tqdm.write(f'After remove invisible faces: {vertices.shape[0]} vertices, {faces.shape[0]} faces')
+    
+    #  Fill small boundaries 
+    meshfix = _meshfix.PyTMesh()
+    meshfix.load_array(vertices, faces)
+    meshfix.fill_small_boundaries(nbe=32, refine=True)
+    vertices, faces = meshfix.return_arrays()  
 
     return vertices, faces
 
@@ -415,16 +421,6 @@ def bake_texture_and_return_mesh(
       • vertices in camera space (min/max Z)
       • first-view wireframe overlay
     """
-
-    debug = False
-    # ---------- 0. debug dirs ----------
-    if debug:
-        dbg = "debug_bake"
-        os.makedirs(dbg, exist_ok=True)
-        log_csv = open(os.path.join(dbg, "view_stats.csv"), "w", newline="")
-        log = csv.writer(log_csv)
-        log.writerow(["view", "rast_px", "mask_px", "ol_px",
-                      "minZ", "maxZ", "medianZ"])
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -471,8 +467,6 @@ def bake_texture_and_return_mesh(
 
         verts_cam = (R @ V.T + T[:, None]).T    # V is (V,3)
         
-        if debug:
-            print(f"[DBG] view {k}: z range {verts_cam[:,2].min():.2f} .. {verts_cam[:,2].max():.2f}")
         
         fx,fy = K3[0,0]*W, K3[1,1]*H
         cx,cy = K3[0,2]*W, K3[1,2]*H
@@ -493,15 +487,6 @@ def bake_texture_and_return_mesh(
         rast_vis = p2f >= 0
         olap  = rast_vis & mask
 
-        if debug:
-            log.writerow([k, int(rast_vis.sum()), int(mask.sum()),
-                          int(olap.sum()), zmin, zmax, zmed])
-            if k==0:  # save first overlay even if empty
-                over = np.zeros((H,W,3),np.uint8)
-                over[...,2] = rast_vis.cpu().numpy()*255
-                over[...,1] = mask.cpu().numpy()*255
-                cv2.imwrite(f"{dbg}/overlay_{k}.png", over)
-
         if olap.sum()==0:
             continue  # skip this view but keep logging
 
@@ -515,8 +500,6 @@ def bake_texture_and_return_mesh(
         w_acc .index_put_((v,u),
                           torch.ones_like(v,dtype=torch.float32)[:,None],
                           accumulate=True)
-
-    if debug: log_csv.close()
 
     if views_ok==0:
         raise RuntimeError(
@@ -535,7 +518,6 @@ def bake_texture_and_return_mesh(
     # normalise, export etc
     tex = tex_acc / w_acc.clamp(min=1e-6)
     tex_np = (tex.clamp(0,1).cpu().numpy()*255).astype(np.uint8)
-    Image.fromarray(tex_np).save(os.path.join(dbg,"baked_texture.png")) if debug else None
 
     visual = trimesh.visual.TextureVisuals(
         uv=UV.cpu().numpy(),
@@ -545,3 +527,6 @@ def bake_texture_and_return_mesh(
     up = np.array([[1, 0, 0],[0, 0, 1],[0,-1, 0]], np.float32)
 
     return trimesh.Trimesh((Vn@up.T), Fn, visual=visual, process=False)
+
+
+
