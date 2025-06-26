@@ -403,3 +403,14 @@ cuda-repo-wsl-ubuntu-11-8-local_11.8.0-1_amd64.deb:Zone.Identifier
 
 #temporary files
 tmp/
+
+#debug directory
+debug_bake/
+debug_fill_holes/
+FILL_HOLES_RESULTS/
+
+# Ignore all files starting with 'bake_texture_' and ending in .py
+trellis/utils/bake_texture_*.py
+
+# Ignore all files starting with 'post_processing_' and ending in .py
+trellis/utils/postprocessing_utils_*.py

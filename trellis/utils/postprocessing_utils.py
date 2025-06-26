@@ -1,5 +1,6 @@
 from typing import *
 import trimesh
+
 from ..representations import Strivec, Gaussian, MeshExtractResult
 
 from .bake_texture import bake_texture_and_return_mesh
@@ -28,7 +29,7 @@ def to_glb(
         simplify,
         texture_size,
         verbose,
-        debug = False,
+        debug = True,
     )
 
     return mesh

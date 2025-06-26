@@ -17,6 +17,9 @@ from pytorch3d.renderer import (
 from pytorch3d.structures import Meshes
 import matplotlib.pyplot as plt
 
+import os, csv, json, datetime, math, pprint
+from pathlib import Path
+
 @torch.no_grad()
 def _fill_holes(
     verts,
@@ -42,6 +45,13 @@ def _fill_holes(
         num_views (int): Number of views to rasterize the mesh.
         verbose (bool): Whether to print progress.
     """
+
+    if debug:
+        ts        = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        dbg_root  = Path("debug_fill_holes") / ts
+        dbg_root.mkdir(parents=True, exist_ok=True)
+    
+    
     # Construct cameras
     yaws = []
     pitchs = []
@@ -102,10 +112,9 @@ def _fill_holes(
 
     rast_settings = RasterizationSettings(
         image_size       = resolution,
-        faces_per_pixel  = 4,          # small but catches thin slivers
+        faces_per_pixel  = 1,          
         blur_radius      = 0.0,
         perspective_correct = False,
-        cull_backfaces   = True,       # critical for hole detection
     )
 
     mesh = Meshes(verts=[verts], faces=[faces.long()])
@@ -118,7 +127,7 @@ def _fill_holes(
             mask = (fragments.pix_to_face[0,...,0] >= 0).float()
             img = (mask.cpu().numpy() * 255).astype(np.uint8)
             from PIL import Image
-            Image.fromarray(img).save(f"dbg_silhouette_{i:03}.png")
+            Image.fromarray(img).save(dbg_root/f"dbg_silhouette_{i:03}.png")
         if debug and i == 0:
             zbuf = fragments.zbuf[0]
             valid_z = zbuf[zbuf < 1e10]
@@ -137,7 +146,7 @@ def _fill_holes(
 
         vis_color = plt.cm.viridis(visibility.cpu().numpy())[:, :3]  # RGB
         face_centers = verts[faces].mean(dim=1).cpu().numpy()
-        utils3d.io.write_ply("dbg_visibility.ply", face_centers,
+        utils3d.io.write_ply(dbg_root/"dbg_visibility.ply", face_centers,
                             vertex_colors=(vis_color * 255).astype(np.uint8))
 
     # Mincut
@@ -230,7 +239,7 @@ def _fill_holes(
         vis_colors[remove_face_indices.cpu().numpy()] = [255, 0, 255]
         if len(valid_remove_cc) > 0:
             vis_colors[remove_face_indices[torch.cat(valid_remove_cc)].cpu().numpy()] = [255, 0, 0]
-        utils3d.io.write_ply('dbg_dual.ply', face_v, edges=vis_dual_edges, vertex_colors=vis_colors)
+        utils3d.io.write_ply(dbg_root/'dbg_dual.ply', face_v, edges=vis_dual_edges, vertex_colors=vis_colors)
         
         # vis_verts = verts.cpu().numpy()
         # vis_edges = edges[torch.cat(cutting_edges)].cpu().numpy()
@@ -256,8 +265,8 @@ def _fill_holes(
     verts, faces = torch.tensor(verts, device='cuda', dtype=torch.float32), torch.tensor(faces, device='cuda', dtype=torch.int32)
 
     if debug:
-        utils3d.io.write_ply("dbg_mesh_original.ply", verts.cpu().numpy(), faces.cpu().numpy())
-        utils3d.io.write_ply("dbg_mesh_filled.ply", verts.cpu().numpy(), faces.cpu().numpy())
+        utils3d.io.write_ply(dbg_root/"dbg_mesh_original.ply", verts.cpu().numpy(), faces.cpu().numpy())
+        utils3d.io.write_ply(dbg_root/"dbg_mesh_filled.ply", verts.cpu().numpy(), faces.cpu().numpy())
 
     if debug:
         vis_color = plt.cm.viridis(visibility.cpu().numpy())[:, :3]  # RGB
@@ -265,6 +274,6 @@ def _fill_holes(
         face_color = (vis_color * 255).astype(np.uint8)
         for fidx, face in enumerate(faces.cpu().numpy()):
             v_colors[face] = face_color[fidx]  # not accurate but good enough
-        utils3d.io.write_ply("dbg_mesh_viscolor.ply", verts.cpu().numpy(), faces.cpu().numpy(), vertex_colors=v_colors)
+        utils3d.io.write_ply(dbg_root/"dbg_mesh_viscolor.ply", verts.cpu().numpy(), faces.cpu().numpy(), vertex_colors=v_colors)
 
     return verts, faces

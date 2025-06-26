@@ -27,6 +27,7 @@ from .batched_helper import batched
 import os, csv, json, datetime, math, pprint
 from pathlib import Path
 
+from .fill_holes import _fill_holes
 
 @batched(2)
 def extrinsics_to_view(extr):
@@ -84,8 +85,17 @@ def postprocess_mesh(
         vertices, faces = mesh.points, mesh.faces.reshape(-1, 4)[:, 1:]
         if verbose:
             tqdm.write(f'After decimate: {vertices.shape[0]} vertices, {faces.shape[0]} faces')
-        if verbose:
-            tqdm.write(f'After remove invisible faces: {vertices.shape[0]} vertices, {faces.shape[0]} faces')
+
+    vertices, faces = torch.tensor(vertices).cuda(), torch.tensor(faces.astype(np.int32)).cuda()
+
+    vertices, faces = _fill_holes(
+        vertices, faces,
+        debug=True,
+        verbose=True,
+    )
+    vertices, faces = vertices.cpu().numpy(), faces.cpu().numpy()
+    if verbose:
+        tqdm.write(f'After remove invisible faces: {vertices.shape[0]} vertices, {faces.shape[0]} faces')
 
     return vertices, faces
 
