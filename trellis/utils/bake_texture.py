@@ -24,8 +24,9 @@ import os
 import csv
 
 from .batched_helper import batched
+import os, csv, json, datetime, math, pprint
+from pathlib import Path
 
-from .fill_holes import _fill_holes
 
 @batched(2)
 def extrinsics_to_view(extr):
@@ -38,48 +39,6 @@ def extrinsics_to_view(extr):
                             [ 0, 0, 1, 0],
                             [ 0, 0, 0, 1]])
     return flip @ extr
-
-
-
-def fill_texture_holes(
-    texture_map_tensor: torch.Tensor,
-    threshold: int = 0,                 
-    method: str = "telea",
-    debug: bool = False                 
-) -> torch.Tensor:
-    """
-    In-paints RGB texture maps.
-    Any texel whose three channels are ≤ `threshold`
-    is treated as a hole.
-
-    Args
-    ----
-    texture_map_tensor : (H, W, 3) float32 ∈ [0,1]
-    threshold          : 0-255 tolerance for “empty” texels
-    method             : 'telea' | 'ns'  (OpenCV algorithms)
-    debug              : if True print hole statistics
-    """
-    if texture_map_tensor.shape[-1] != 3:
-        raise ValueError("Expected an RGB tensor with 3 channels")
-
-    device = texture_map_tensor.device
-    tex_np = (texture_map_tensor.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
-
-    # ----------------------------- tolerant mask
-    mask = (tex_np <= threshold).all(axis=-1).astype(np.uint8)  # uint8 0/1
-
-    if debug:
-        hole_ratio = mask.mean() * 100
-        print(f"[DEBUG] in-paint: {hole_ratio:.2f}% of texels are holes "
-              f"(threshold={threshold})")
-
-    if not mask.any():
-        return texture_map_tensor  
-
-    flags = cv2.INPAINT_TELEA if method.lower() == "telea" else cv2.INPAINT_NS
-    inpainted_rgb = cv2.inpaint(tex_np, mask, inpaintRadius=3, flags=flags)
-
-    return (torch.from_numpy(inpainted_rgb).float() / 255.0).to(device)
 
 def parametrize_mesh(vertices: np.array, faces: np.array):
     """
@@ -128,19 +87,7 @@ def postprocess_mesh(
         if verbose:
             tqdm.write(f'After remove invisible faces: {vertices.shape[0]} vertices, {faces.shape[0]} faces')
 
-    vertices, faces = torch.tensor(vertices).cuda(), torch.tensor(faces.astype(np.int32)).cuda()
-
-    vertices, faces = _fill_holes(
-        vertices, faces,
-        debug=True,
-        verbose=True,
-    )
-    vertices, faces = vertices.cpu().numpy(), faces.cpu().numpy()
-    if verbose:
-        tqdm.write(f'After remove invisible faces: {vertices.shape[0]} vertices, {faces.shape[0]} faces')
-
     return vertices, faces
-
 
 def bake_texture_and_return_mesh(
     app_rep,
@@ -155,19 +102,27 @@ def bake_texture_and_return_mesh(
       • pixel counts for rasteriser, mask, and their overlap
       • vertices in camera space (min/max Z)
       • first-view wireframe overlay
+      • NEW (debug=True):
+        overlay_NNN.png  (every view)
+        camera_NNN.json  (R/T + intrinsics)
+        pointcloud_NNN.ply (verts in that camera frame, first & last)
+        uv_hits.png      (coverage heat-map)
+        baked_texture.png, mesh_final.ply
+        view_stats.csv   (augmented with intrinsics)
     """
-
-    simplify: 0.95
-
-
+    
     # ---------- 0. debug dirs ----------
     if debug:
-        dbg = "debug_bake"
-        os.makedirs(dbg, exist_ok=True)
-        log_csv = open(os.path.join(dbg, "view_stats.csv"), "w", newline="")
-        log = csv.writer(log_csv)
-        log.writerow(["view", "rast_px", "mask_px", "ol_px",
-                      "minZ", "maxZ", "medianZ"])
+        ts        = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        dbg_root  = Path("debug_bake") / ts
+        dbg_root.mkdir(parents=True, exist_ok=True)
+
+        log_csv   = open(dbg_root / "view_stats.csv", "w", newline="")
+        log_writer = csv.writer(log_csv)
+        log_writer.writerow(
+            ["view", "rast_px", "mask_px", "overlap_px",
+             "minZ", "maxZ", "medianZ", "fx", "fy", "cx", "cy"]
+        )
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -236,14 +191,40 @@ def bake_texture_and_return_mesh(
         rast_vis = p2f >= 0
         olap  = rast_vis & mask
 
+        # ---------- LOGGING ---------------------------------------------
         if debug:
-            log.writerow([k, int(rast_vis.sum()), int(mask.sum()),
-                          int(olap.sum()), zmin, zmax, zmed])
-            if k==0:  # save first overlay even if empty
-                over = np.zeros((H,W,3),np.uint8)
-                over[...,2] = rast_vis.cpu().numpy()*255
-                over[...,1] = mask.cpu().numpy()*255
-                cv2.imwrite(f"{dbg}/overlay_{k}.png", over)
+            # a) CSV row
+            log_writer.writerow(
+                [k,
+                 int(rast_vis.sum()),
+                 int(mask.sum()),
+                 int(olap.sum()),
+                 zmin, zmax, zmed, fx, fy, cx, cy]
+            )
+
+            # b) overlay PNG
+            overlay = torch.zeros(H, W, 3, dtype=torch.uint8, device=dev)
+            overlay[..., 2] = rast_vis.to(torch.uint8) * 255     # blue
+            overlay[..., 1] = mask.to(torch.uint8)      * 255     # green
+            cv2.imwrite(str(dbg_root / f"overlay_{k:03d}.png"),
+                        overlay.cpu().numpy())
+
+            # c) dump camera JSON
+            cam_dict = {
+                "R": R.cpu().tolist(),
+                "T": T.cpu().tolist(),
+                "fx": float(fx), "fy": float(fy),
+                "cx": float(cx), "cy": float(cy),
+                "z_range": [float(zmin), float(zmax)],
+                "image_size": [int(H), int(W)]
+            }
+            with open(dbg_root / f"camera_{k:03d}.json", "w") as f:
+                json.dump(cam_dict, f, indent=2)
+
+            # d) point-cloud of the mesh in *this* camera space
+            if k == 0 or k == len(obs) - 1:     # first & last for brevity
+                pc = trimesh.points.PointCloud(verts_cam.cpu().numpy())
+                pc.export(dbg_root / f"pointcloud_{k:03d}.ply")
 
         if olap.sum()==0:
             continue  # skip this view but keep logging
@@ -278,7 +259,15 @@ def bake_texture_and_return_mesh(
     # normalise, export etc
     tex = tex_acc / w_acc.clamp(min=1e-6)
     tex_np = (tex.clamp(0,1).cpu().numpy()*255).astype(np.uint8)
-    Image.fromarray(tex_np).save(os.path.join(dbg,"baked_texture.png")) if debug else None
+    
+    if debug:
+        Image.fromarray(tex_np).save(dbg_root / "baked_texture.png")
+
+        # UV hit heat-map
+        hits = (w_acc[..., 0] > 0).float().cpu().numpy()
+        heat = cv2.applyColorMap((hits * 255).astype(np.uint8),
+                                    cv2.COLORMAP_JET)
+        cv2.imwrite(str(dbg_root / "uv_hits.png"), heat)
 
     visual = trimesh.visual.TextureVisuals(
         uv=UV.cpu().numpy(),
@@ -288,5 +277,3 @@ def bake_texture_and_return_mesh(
     up = np.array([[1, 0, 0],[0, 0, 1],[0,-1, 0]], np.float32)
 
     return trimesh.Trimesh((Vn@up.T), Fn, visual=visual, process=False)
-
-
