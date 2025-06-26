@@ -25,6 +25,8 @@ import csv
 
 from .batched_helper import batched
 
+from .fill_holes import _fill_holes
+
 @batched(2)
 def extrinsics_to_view(extr):
     """
@@ -36,6 +38,8 @@ def extrinsics_to_view(extr):
                             [ 0, 0, 1, 0],
                             [ 0, 0, 0, 1]])
     return flip @ extr
+
+
 
 def fill_texture_holes(
     texture_map_tensor: torch.Tensor,
@@ -70,7 +74,7 @@ def fill_texture_holes(
               f"(threshold={threshold})")
 
     if not mask.any():
-        return texture_map_tensor  # nothing to do
+        return texture_map_tensor  
 
     flags = cv2.INPAINT_TELEA if method.lower() == "telea" else cv2.INPAINT_NS
     inpainted_rgb = cv2.inpaint(tex_np, mask, inpaintRadius=3, flags=flags)
@@ -124,7 +128,19 @@ def postprocess_mesh(
         if verbose:
             tqdm.write(f'After remove invisible faces: {vertices.shape[0]} vertices, {faces.shape[0]} faces')
 
+    vertices, faces = torch.tensor(vertices).cuda(), torch.tensor(faces.astype(np.int32)).cuda()
+
+    vertices, faces = _fill_holes(
+        vertices, faces,
+        debug=True,
+        verbose=True,
+    )
+    vertices, faces = vertices.cpu().numpy(), faces.cpu().numpy()
+    if verbose:
+        tqdm.write(f'After remove invisible faces: {vertices.shape[0]} vertices, {faces.shape[0]} faces')
+
     return vertices, faces
+
 
 def bake_texture_and_return_mesh(
     app_rep,
@@ -140,6 +156,9 @@ def bake_texture_and_return_mesh(
       • vertices in camera space (min/max Z)
       • first-view wireframe overlay
     """
+
+    simplify: 0.95
+
 
     # ---------- 0. debug dirs ----------
     if debug:
@@ -269,3 +288,5 @@ def bake_texture_and_return_mesh(
     up = np.array([[1, 0, 0],[0, 0, 1],[0,-1, 0]], np.float32)
 
     return trimesh.Trimesh((Vn@up.T), Fn, visual=visual, process=False)
+
+
