@@ -60,7 +60,6 @@ def parametrize_mesh(vertices: np.array, faces: np.array):
 def postprocess_mesh(
     vertices: np.array,
     faces: np.array,
-    simplify: bool = True,
     simplify_ratio: float = 0.9,
     verbose: bool = False,
 ):
@@ -79,7 +78,8 @@ def postprocess_mesh(
         tqdm.write(f'Before postprocess: {vertices.shape[0]} vertices, {faces.shape[0]} faces')
 
     # Simplify
-    if simplify and simplify_ratio > 0:
+    if simplify_ratio > 0:
+        print(f"simplifying with ratio {simplify_ratio}")
         mesh = pv.PolyData(vertices, np.concatenate([np.full((faces.shape[0], 1), 3), faces], axis=1))
         mesh = mesh.decimate(simplify_ratio, progress_bar=verbose)
         vertices, faces = mesh.points, mesh.faces.reshape(-1, 4)[:, 1:]

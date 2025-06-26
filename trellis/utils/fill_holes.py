@@ -79,30 +79,24 @@ def _fill_holes(
     fov_deg = 40.0
     radius  = 2.0
     
-    # yaws, pitchs are already float32 on GPU
     dirs = torch.stack([
         torch.sin(yaws) * torch.cos(pitchs),   # x
         torch.cos(yaws) * torch.cos(pitchs),   # y
         torch.sin(pitchs)                      # z
     ], dim=1)                                  # (N, 3)
 
-    center   = verts.mean(0)                       # (3,) float32
-    verts_c  = verts - center                      # shift mesh to origin
-    # recompute bounding radius
-    radius   = verts_c.norm(dim=1).max() * 1.3     # 30 % margin
+    eyes = dirs * radius                       # float32 guaranteed
 
-    # Hammersley directions → eye positions
-    eyes = dirs * radius + center                  # (N,3)
+    dtype  = torch.get_default_dtype()      # usually float64 
+    eyes   = eyes.to(dtype=dtype)
+    at     = torch.zeros_like(eyes)         # inherits dtype
+    up     = torch.tensor([0., 0., 1.],
+                        device=eyes.device,
+                        dtype=dtype).expand_as(eyes)
+
+    R, T = look_at_view_transform(
+            eye=eyes, at=at, up=up, device=eyes.device)
     
-    dtype = torch.get_default_dtype()      # float64 
-
-    eyes   = eyes.to(dtype)
-    center = center.to(dtype)
-    at     = center.expand_as(eyes)
-    up     = torch.tensor([0., 0., 1.], device=verts.device, dtype=dtype
-                        ).expand_as(eyes)
-
-    R, T = look_at_view_transform(eye=eyes, at=at, up=up, device=verts.device)
     
     verts_cam = (R[0] @ verts.T + T[0][:, None]).T
     z_min, z_max = verts_cam[:,2].min(), verts_cam[:,2].max()
