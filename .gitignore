@@ -414,3 +414,6 @@ trellis/utils/bake_texture_*.py
 
 # Ignore all files starting with 'post_processing_' and ending in .py
 trellis/utils/postprocessing_utils_*.py
+
+# Ignore notes txt
+trellis/utils/debug.txt
