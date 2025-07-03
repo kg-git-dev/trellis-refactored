@@ -29,7 +29,7 @@ def to_glb(
         simplify,
         texture_size,
         verbose,
-        debug = True,
+        debug = False,
     )
 
     return mesh

@@ -534,7 +534,7 @@ def bake_texture_and_return_mesh(
     faces_uvs = F
 
     # ---------- 2. observations ----------
-    imgs, extrs, intrs = render_multiview(app_rep, 1024, 100)  # (B, H, W, 3)
+    imgs, extrs, intrs = render_multiview(app_rep, 1024, 1000)  # (B, H, W, 3)
     H = W = imgs[0].shape[0]
 
     obs = [torch.tensor(i/255.0, dtype=torch.float32, device=dev)
@@ -566,11 +566,11 @@ def bake_texture_and_return_mesh(
     for k, (rgb, mask, Ex, K3) in enumerate(tqdm(zip(obs, msk, extrs, intrs),
                  total=len(obs), disable=not verbose)):
         
-        R_cv = Ex[:3, :3].to(dev).float()   # OpenCV rotation
-        t_cv = Ex[:3,  3].to(dev).float()   # OpenCV translation
+        R_cv = Ex[:3, :3].to(dev).float()   
+        t_cv = Ex[:3,  3].to(dev).float()   
 
-        R_cam = R_cv.T                      # <-- transpose!
-        T_cam = t_cv                        #     keep t as-is
+        R_cam = R_cv.T                      
+        T_cam = t_cv                        
         
         # Keep original principal point (no flipping)
         fx, fy = K3[0, 0] * W, K3[1, 1] * H
@@ -592,6 +592,9 @@ def bake_texture_and_return_mesh(
         print(f"View {k}: Z-range [{z_vals.min().item():.2f}, {z_vals.max().item():.2f}] "
             f"Front: {(z_vals > 0).sum()}/{len(z_vals)} vertices")
 
+        # --- rotate mask & colour image by 180° (two 90° turns) ---
+        mask = torch.rot90(mask, 2, (0, 1))   # dims=(Y,X)
+        rgb  = torch.rot90(rgb,  2, (0, 1))
 
         # ---------- rasterise ----------
         frags = rast(mesh_p3d, cameras=cam)
